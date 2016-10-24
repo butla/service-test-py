@@ -9,22 +9,11 @@ import dateutil.parser
 import port_for
 import requests
 
-from .http_service import HttpService
+from .http_service import HttpService, DockerService
 from .mb_mgmt import get_mb_command
 
 
-class Mountebank(HttpService):
-    """Manages Mountebank instance on localhost. Can start and stop the process.
-
-    Args:
-        port (int): Port on which Mountebank will listen for impostor configuration commands.
-            If not provided then a random free port will be selected.
-    """
-
-    def __init__(self, port=None):
-        super().__init__(get_mb_command() + ['--mock', '--port', '{port}'], port)
-        self._imposters_url = 'http://localhost:{}/imposters'.format(self.port)
-
+class MountebankMixin:
     def add_imposter(self, imposter_cfg):
         """Adds a HTTP service stub (imposter) to Mountebank instance.
 
@@ -37,7 +26,7 @@ class Mountebank(HttpService):
         """
         resp = requests.post(self._imposters_url, json=imposter_cfg)
         resp.raise_for_status()
-        return Imposter(self.port, imposter_cfg['port'])
+        return Imposter(self.port, imposter_cfg['port'], host=self.host)
 
     def add_imposter_simple(self, port=None, method='GET',  # pylint: disable=too-many-arguments
                             path='/', status_code=200, response=''):
@@ -112,6 +101,30 @@ class Mountebank(HttpService):
         resp = requests.delete(self._imposters_url)
         resp.raise_for_status()
 
+
+class Dockerbank(DockerService, MountebankMixin):
+    def __init__(self, image):
+        super().__init__(image, port=2525)
+
+    @property
+    def _imposters_url(self):
+        return self.url + '/imposters'
+
+
+class Mountebank(HttpService, MountebankMixin):
+    """Manages Mountebank instance on localhost. Can start and stop the process.
+
+    Args:
+        port (int): Port on which Mountebank will listen for impostor configuration commands.
+            If not provided then a random free port will be selected.
+    """
+
+    def __init__(self, port=None):
+        super().__init__(get_mb_command() + ['--mock', '--port', '{port}'], port)
+        self._imposters_url = 'http://localhost:{}/imposters'.format(self.port)
+        self.host = 'localhost'
+
+
 class Imposter:
     """A Mountebank imposter. It can contain stubs of HTTP, HTTPS, TCP or SMTP services.
 
@@ -124,8 +137,8 @@ class Imposter:
         port (int): Port on localhost taken by this Imposter.
     """
 
-    def __init__(self, mountebank_port, port):
-        self.url = 'http://localhost:{}/imposters/{}'.format(mountebank_port, port)
+    def __init__(self, mountebank_port, port, host='localhost'):
+        self.url = 'http://{}:{}/imposters/{}'.format(host, mountebank_port, port)
         self.port = port
 
     def requests(self):

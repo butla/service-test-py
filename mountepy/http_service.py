@@ -12,6 +12,7 @@ import subprocess
 import time
 
 import port_for
+import docker
 
 
 def wait_for_port(port, host='localhost', timeout=5.0):
@@ -35,6 +36,55 @@ def wait_for_port(port, host='localhost', timeout=5.0):
             if time.perf_counter() - start_time >= timeout:
                 raise TimeoutError('Waited too long for the port {} on host {} to start accepting '
                                    'connections.'.format(port, host))
+
+
+class DockerService:
+    def __init__(self, image, port):
+        self.image = image
+        self.port = port
+
+    def _pull_if_necessary(self):
+        client = docker.Client()
+        images = client.images()
+        for image in images:
+            if self.image in image['RepoTags']:
+                return
+        for line in client.pull(repository=self.image, stream=True):
+            print(line)
+
+    def start(self, timeout=5.0):
+        client = docker.Client()
+        self._pull_if_necessary()
+        container = client.create_container(image=self.image)
+        self._container_id = container['Id']
+        client.start(container=self._container_id)
+        networks = client.inspect_container(self._container_id)['NetworkSettings']['Networks']
+        for network in networks.values():
+            self.host = network['IPAddress']
+        self.url = f'http://{self.host}:{self.port}'
+
+        try:
+            wait_for_port(self.port, host=self.host, timeout=timeout)
+        except Exception:
+            logging.exception("Service in container '%r' didn't start", self._container_id)
+            self.stop()
+            raise
+
+        atexit.register(self.stop)
+
+    def stop(self, timeout=1.0):
+        atexit.unregister(self.stop)
+        client = docker.Client()
+        print(client.logs(self._container_id, stdout=True, stderr=True, stream=False))
+        client.stop(container=self._container_id, timeout=timeout)
+        client.remove_container(container=self._container_id, force=True)
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
 
 
 class HttpService:
